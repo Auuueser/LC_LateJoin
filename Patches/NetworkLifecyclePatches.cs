@@ -10,6 +10,7 @@ internal static class NetworkLifecyclePatches
     private static void GameNetworkManagerOnEnablePostfix()
     {
         LateJoinSyncManager.EnsureNetworkHandlersRegistered();
+        LateJoinComprehensiveSyncManager.EnsureNetworkHandlersRegistered();
     }
 
     [HarmonyPatch(typeof(GameNetworkManager), "Start")]
@@ -17,6 +18,7 @@ internal static class NetworkLifecyclePatches
     private static void GameNetworkManagerStartPostfix()
     {
         LateJoinSyncManager.EnsureNetworkHandlersRegistered();
+        LateJoinComprehensiveSyncManager.EnsureNetworkHandlersRegistered();
     }
 
     [HarmonyPatch(typeof(StartOfRound), "OnEnable")]
@@ -24,6 +26,7 @@ internal static class NetworkLifecyclePatches
     private static void StartOfRoundOnEnablePostfix()
     {
         LateJoinSyncManager.EnsureNetworkHandlersRegistered();
+        LateJoinComprehensiveSyncManager.EnsureNetworkHandlersRegistered();
     }
 
     [HarmonyPatch(typeof(StartOfRound), "Start")]
@@ -31,12 +34,14 @@ internal static class NetworkLifecyclePatches
     private static void StartOfRoundStartPostfix()
     {
         LateJoinSyncManager.EnsureNetworkHandlersRegistered();
+        LateJoinComprehensiveSyncManager.EnsureNetworkHandlersRegistered();
     }
 
     [HarmonyPatch(typeof(GameNetworkManager), "Disconnect")]
     [HarmonyPrefix]
     private static void DisconnectPrefix()
     {
+        LateJoinComprehensiveSyncManager.Shutdown();
         LateJoinSyncManager.Shutdown();
     }
 
@@ -44,6 +49,7 @@ internal static class NetworkLifecyclePatches
     [HarmonyPrefix]
     private static void OnLocalDisconnectPrefix()
     {
+        LateJoinComprehensiveSyncManager.Shutdown();
         LateJoinSyncManager.Shutdown();
     }
 }

@@ -9,17 +9,19 @@ namespace LC_LateJoin.Patches;
 [HarmonyPatch(typeof(GameNetworkManager), "ConnectionApproval")]
 internal static class ConnectionApprovalPatch
 {
+    [HarmonyPriority(Priority.First)]
     [HarmonyPrefix]
     private static bool Prefix(ConnectionApprovalRequest request, ConnectionApprovalResponse response)
     {
         LateJoinSyncManager.EnsureNetworkHandlersRegistered();
+        LateJoinComprehensiveSyncManager.EnsureNetworkHandlersRegistered();
 
-        if (request.ClientNetworkId == NetworkManager.Singleton.LocalClientId)
+        if (NetworkManager.Singleton == null || request.ClientNetworkId == NetworkManager.Singleton.LocalClientId)
         {
             return true;
         }
 
-        if (!GameNetworkManager.Instance.gameHasStarted)
+        if (GameNetworkManager.Instance == null || !GameNetworkManager.Instance.gameHasStarted)
         {
             return true;
         }
@@ -29,7 +31,7 @@ internal static class ConnectionApprovalPatch
             return false;
         }
 
-        if (!LateJoinSyncManager.CanApproveLateJoin(out string reason))
+        if (!LateJoinComprehensiveSyncManager.IsStableLandedForLateJoin(out string reason))
         {
             Plugin.Log.LogInfo($"Late join approval blocked for client {request.ClientNetworkId}: {reason}");
             response.Reason = $"Ship is not ready for late joining: {reason}";
@@ -44,14 +46,16 @@ internal static class ConnectionApprovalPatch
         response.CreatePlayerObject = false;
         response.Pending = false;
         LateJoinSyncManager.RecordApprovedClientIdentity(request.ClientNetworkId, identityKey);
-        Plugin.Log.LogInfo($"Approved late join for client {request.ClientNetworkId}");
+        LateJoinComprehensiveSyncManager.TrackApprovedLateJoinClient(request.ClientNetworkId);
+        Plugin.Log.LogInfo($"Approved stable landed late join for client {request.ClientNetworkId}");
         return false;
     }
 
+    [HarmonyPriority(Priority.Last)]
     [HarmonyPostfix]
     private static void Postfix(ConnectionApprovalRequest request, ConnectionApprovalResponse response)
     {
-        if (request.ClientNetworkId == NetworkManager.Singleton.LocalClientId)
+        if (NetworkManager.Singleton == null || request.ClientNetworkId == NetworkManager.Singleton.LocalClientId)
         {
             return;
         }
@@ -59,6 +63,10 @@ internal static class ConnectionApprovalPatch
         if (response.Approved)
         {
             LateJoinSyncManager.RecordApprovedClientIdentity(request.ClientNetworkId, ExtractIdentityKey(request));
+            if (GameNetworkManager.Instance != null && GameNetworkManager.Instance.gameHasStarted)
+            {
+                LateJoinComprehensiveSyncManager.TrackApprovedLateJoinClient(request.ClientNetworkId);
+            }
             return;
         }
 
@@ -67,26 +75,41 @@ internal static class ConnectionApprovalPatch
             return;
         }
 
-        if (!LateJoinSyncManager.CanApproveLateJoin(out string reason))
+        if (!LateJoinComprehensiveSyncManager.IsStableLandedForLateJoin(out string reason))
         {
             Plugin.Log.LogInfo($"Late join approval blocked for client {request.ClientNetworkId}: {reason}");
             response.Reason = $"Ship is not ready for late joining: {reason}";
+            response.Approved = false;
+            response.CreatePlayerObject = false;
+            response.Pending = false;
             return;
         }
 
         response.Approved = true;
         response.Reason = string.Empty;
+        response.CreatePlayerObject = false;
+        response.Pending = false;
         LateJoinSyncManager.RecordApprovedClientIdentity(request.ClientNetworkId, ExtractIdentityKey(request));
-        Plugin.Log.LogInfo($"Approved landed late join for client {request.ClientNetworkId}");
+        LateJoinComprehensiveSyncManager.TrackApprovedLateJoinClient(request.ClientNetworkId);
+        Plugin.Log.LogInfo($"Approved stable landed late join for client {request.ClientNetworkId}");
     }
 
     private static bool TryValidateBaseConnection(ConnectionApprovalRequest request, ConnectionApprovalResponse response, out string identityKey)
     {
-        string payload = Encoding.ASCII.GetString(request.Payload);
+        string payload;
+        try
+        {
+            payload = request.Payload != null ? Encoding.ASCII.GetString(request.Payload) : string.Empty;
+        }
+        catch
+        {
+            payload = string.Empty;
+        }
+
         string[] parts = payload.Split(new[] { ',' }, StringSplitOptions.None);
         identityKey = ExtractIdentityKey(parts, request.ClientNetworkId);
 
-        if (string.IsNullOrEmpty(payload))
+        if (string.IsNullOrWhiteSpace(payload) || parts.Length == 0 || string.IsNullOrWhiteSpace(parts[0]))
         {
             response.Reason = "Unknown; please verify your game files.";
             response.Approved = false;
@@ -104,7 +127,10 @@ internal static class ConnectionApprovalPatch
             return false;
         }
 
-        if (GameNetworkManager.Instance.connectedPlayers >= 4)
+        int maxPlayers = StartOfRound.Instance != null && StartOfRound.Instance.allPlayerScripts != null
+            ? StartOfRound.Instance.allPlayerScripts.Length
+            : 4;
+        if (GameNetworkManager.Instance.connectedPlayers >= maxPlayers)
         {
             response.Reason = "Lobby is full!";
             response.Approved = false;
@@ -122,16 +148,25 @@ internal static class ConnectionApprovalPatch
             return false;
         }
 
-        if (!GameNetworkManager.Instance.disableSteam
-            && (StartOfRound.Instance == null
-                || parts.Length < 2
-                || StartOfRound.Instance.KickedClientIds.Contains((ulong)Convert.ToInt64(parts[1]))))
+        if (!GameNetworkManager.Instance.disableSteam)
         {
-            response.Reason = "You cannot rejoin after being kicked.";
-            response.Approved = false;
-            response.CreatePlayerObject = false;
-            response.Pending = false;
-            return false;
+            if (StartOfRound.Instance == null || parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]) || !ulong.TryParse(parts[1], out ulong steamId))
+            {
+                response.Reason = "Unknown Steam identity; please verify your game files.";
+                response.Approved = false;
+                response.CreatePlayerObject = false;
+                response.Pending = false;
+                return false;
+            }
+
+            if (StartOfRound.Instance.KickedClientIds.Contains(steamId))
+            {
+                response.Reason = "You cannot rejoin after being kicked.";
+                response.Approved = false;
+                response.CreatePlayerObject = false;
+                response.Pending = false;
+                return false;
+            }
         }
 
         return true;
@@ -139,14 +174,27 @@ internal static class ConnectionApprovalPatch
 
     private static string ExtractIdentityKey(ConnectionApprovalRequest request)
     {
-        string payload = Encoding.ASCII.GetString(request.Payload);
+        string payload;
+        try
+        {
+            payload = request.Payload != null ? Encoding.ASCII.GetString(request.Payload) : string.Empty;
+        }
+        catch
+        {
+            payload = string.Empty;
+        }
+
         string[] parts = payload.Split(new[] { ',' }, StringSplitOptions.None);
         return ExtractIdentityKey(parts, request.ClientNetworkId);
     }
 
     private static string ExtractIdentityKey(string[] parts, ulong clientId)
     {
-        if (!GameNetworkManager.Instance.disableSteam && parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
+        if (GameNetworkManager.Instance != null
+            && !GameNetworkManager.Instance.disableSteam
+            && parts != null
+            && parts.Length >= 2
+            && !string.IsNullOrWhiteSpace(parts[1]))
         {
             return parts[1];
         }

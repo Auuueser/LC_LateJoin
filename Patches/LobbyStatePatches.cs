@@ -1,4 +1,5 @@
 using HarmonyLib;
+using System.Collections;
 using UnityEngine;
 
 namespace LC_LateJoin.Patches;
@@ -22,17 +23,27 @@ internal static class LobbyStatePatches
     }
 
     [HarmonyPatch(typeof(StartOfRound), "OnShipLandedMiscEvents")]
+    [HarmonyPriority(Priority.Last)]
     [HarmonyPostfix]
     private static void OnShipLandedPostfix()
     {
-        LateJoinSyncManager.RefreshJoinableState();
+        LateJoinSyncManager.SetLobbyJoinable(false);
+        if (StartOfRound.Instance != null)
+        {
+            StartOfRound.Instance.StartCoroutine(RefreshJoinableStateWhenStable());
+        }
     }
 
     [HarmonyPatch(typeof(RoundManager), "FinishGeneratingNewLevelClientRpc")]
+    [HarmonyPriority(Priority.Last)]
     [HarmonyPostfix]
     private static void FinishGeneratingNewLevelPostfix()
     {
-        LateJoinSyncManager.RefreshJoinableState();
+        LateJoinSyncManager.SetLobbyJoinable(false);
+        if (StartOfRound.Instance != null)
+        {
+            StartOfRound.Instance.StartCoroutine(RefreshJoinableStateWhenStable());
+        }
     }
 
     [HarmonyPatch(typeof(StartOfRound), "ShipLeave")]
@@ -47,12 +58,14 @@ internal static class LobbyStatePatches
     private static void OnClientConnectPostfix(StartOfRound __instance, ulong clientId)
     {
         LateJoinSyncManager.HandleServerClientConnected(__instance, clientId);
+        LateJoinComprehensiveSyncManager.HandleServerClientConnected(__instance, clientId);
     }
 
     [HarmonyPatch(typeof(StartOfRound), "OnClientDisconnect")]
     [HarmonyPostfix]
-    private static void OnClientDisconnectPostfix()
+    private static void OnClientDisconnectPostfix(ulong clientId)
     {
+        LateJoinComprehensiveSyncManager.HandleServerClientDisconnected(clientId);
         LateJoinSyncManager.RefreshJoinableState();
     }
 
@@ -95,5 +108,17 @@ internal static class LobbyStatePatches
         }
 
         return false;
+    }
+
+    private static IEnumerator RefreshJoinableStateWhenStable()
+    {
+        float start = Time.realtimeSinceStartup;
+        LateJoinSyncManager.SetLobbyJoinable(false);
+        while (!LateJoinComprehensiveSyncManager.IsStableLandedForLateJoin(out _) && Time.realtimeSinceStartup - start < 20f)
+        {
+            yield return null;
+        }
+
+        LateJoinSyncManager.RefreshJoinableState();
     }
 }
